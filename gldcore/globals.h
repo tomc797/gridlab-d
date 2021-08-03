@@ -269,6 +269,7 @@ GLOBAL unsigned int global_deltamode_iteration_limit INIT(10);	/**< Global itera
 GLOBAL unsigned int global_deltamode_forced_extra_timesteps INIT(0);	/**< Deltamode forced extra time steps -- once all items want SM_EVENT, this will force this many more updates */
 GLOBAL bool global_deltamode_forced_always INIT(false);	/**< Deltamode flag - prevents exit from deltamode (no SM_EVENT) -- mainly for debugging purposes */
 GLOBAL bool global_deltamode_force_preferred_order INIT(true);	/** Deltamode flag - orders modules in deltamode execution according to preferred execution order - false will make it load based on GLM order */
+GLOBAL bool global_deltamode_force_initial_reiterate INIT(false);	/** Deltamode flag - forces extra reiteration on first QSTS-to-deltamode transition to help some initialization issues */
 
 /* master/slave */
 GLOBAL char global_master[1024] INIT(""); /**< master hostname */

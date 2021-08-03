@@ -2033,8 +2033,19 @@ STATUS exec_start(void)
 				{
 					if (delta_dt==0)	/* Delta mode now */
 					{
-						global_simulation_mode = SM_DELTA;
-						t = global_clock;
+						/* See if it is the initial tiemstep and force a reiteration */
+						if (global_deltamode_force_initial_reiterate == true)
+						{
+							/* Force reiteration (looks like non-deltamode), but deflag too */
+							global_simulation_mode = SM_EVENT;
+							t = global_clock;
+							global_deltamode_force_initial_reiterate = false;
+						}
+						else
+						{
+							global_simulation_mode = SM_DELTA;
+							t = global_clock;
+						}
 					}
 					else	/* Normal sync - get us to delta point */
 					{
