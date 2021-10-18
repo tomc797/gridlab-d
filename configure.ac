@@ -529,37 +529,29 @@ AS_CASE([$with_helics],
 gld_save_LIBS="$LIBS"; LIBS="$LIBS $HELICS_LIBS"
 gld_save_LDFLAGS="$LDFLAGS"; LDFLAGS="$LDFLAGS $HELICS_LDFLAGS"
 gld_save_CPPFLAGS="$CPPFLAGS"; CPPFLAGS="$CPPFLAGS $HELICS_CPPFLAGS"
-# add libhelics to HELICS_LIBS if missing
-AS_CASE([$platform],
-	[*linux*], [AS_CASE([$HELICS_LIBS],
-					[*lhelics*], [], [HELICS_LIBS="$HELICS_LIBS -lhelicsSharedLib"])
-				AS_CASE([$LIBS],
-					[*lhelics*], [], [LIBS="$LIBS -lhelicsSharedLib"])],
-	[*darwin*], [AS_CASE([$HELICS_LIBS],
-					[*lhelics*], [], [HELICS_LIBS="$HELICS_LIBS -lhelicsSharedLib"])
-				AS_CASE([$LIBS],
-					[*lhelics*], [], [LIBS="$LIBS -lhelicsSharedLib"])],
-	[*windows*], [AS_CASE([$HELICS_LIBS],
-					[*lhelics*], [], [HELICS_LIBS="$HELICS_LIBS -lhelicsSharedLib"])
-				AS_CASE([$LIBS],
-					[*lhelics*], [], [LIBS="$LIBS -lhelicsSharedLib"])])
-have_helics=yes
-AC_MSG_CHECKING([for HELICS])
-AC_LINK_IFELSE(
-	[AC_LANG_PROGRAM([[ 
-#include <helics/helics98.hpp>
-]],
-[[ 
-helicscpp::Input ipt; 
-]])],
-    [have_helics=yes; have_helics_int=1],
-    [have_helics=no; have_helics_int=0])
+AS_IF([test "x$with_helics" != xno],[dnl
+  AC_MSG_NOTICE([])
+  AC_MSG_NOTICE([HELICS])
+  AC_MSG_NOTICE([])
+  # add libhelics to HELICS_LIBS if missing
+  AC_SEARCH_LIBS([helicsGetVersion],[helicsSharedLib helics],[dnl
+    AS_IF([test x$ac_cv_search_helicsGetVersion != "none required"],[dnl
+           HELICS_LIBS="$ac_cv_search_helicsGetVersion $HELICS_LIBS"])
+    AC_CHECK_HEADERS([helics/helics98.hpp],[dnl
+      AC_CHECK_TYPES([helicscpp::Input, HelicsProperties, HelicsFederateState],[],[],[#include <helics/helics98.hpp>])])],
+  [],[])])
+
+AS_IF([test "x$ac_cv_type_helicscpp__Input" = xyes],[dnl
+  have_helics=yes; have_helics_int=1],[dnl
+  have_helics=no; have_helics_int=0])
+
 LIBS="$gld_save_LIBS"
 LDFLAGS="$gld_save_LDFLAGS"
 CPPFLAGS="$gld_save_CPPFLAGS"
 AC_SUBST([HELICS_LIBS])
 AC_SUBST([HELICS_LDFLAGS])
 AC_SUBST([HELICS_CPPFLAGS])
+AC_MSG_CHECKING([HELICS])
 AC_MSG_RESULT([$have_helics])
 AC_DEFINE_UNQUOTED([HAVE_HELICS], [$have_helics_int], [whether HELICS was found])
 AM_CONDITIONAL([HAVE_HELICS], [test "x$have_helics" = xyes])

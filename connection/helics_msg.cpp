@@ -12,6 +12,7 @@
 #include <errno.h>
 #include <math.h>
 #include <complex.h>
+#include <utility>
 
 #include "helics_msg.h"
 
@@ -21,6 +22,126 @@ EXPORT_PRECOMMIT(helics_msg);
 EXPORT_SYNC(helics_msg);
 EXPORT_COMMIT(helics_msg);
 EXPORT_LOADMETHOD(helics_msg,configure);
+
+#if HAVE_HELICS
+////
+// Compatibility adapters to minimize differences between
+// HELICS 2.x and HELICS 3
+////
+namespace {
+
+  namespace helpers {
+    // helicsPublicationGetKey renamed to helicsPublicationGetName #1856
+    template<class T>
+    auto
+    get_key(const T& o) -> decltype(o.getKey())
+    {
+      return o.getKey();
+    }
+
+    template<class T>
+    auto
+    get_key(const T& o) -> decltype(o.getName())
+    {
+      return o.getName();
+    }
+
+    // helics<*>PendingMessages moved helics<*>PendingMessageCount #1679
+    template<class T>
+    auto
+    pending_message_count(const T& o) -> decltype(o.pendingMessages())
+    {
+      return o.pendingMessages();
+    }
+
+    template<class T>
+    auto
+    pending_message_count(const T& o) -> decltype(o.pendingMessageCount())
+    {
+      return o.pendingMessageCount();
+    }
+
+    template<class T, typename = void>
+    struct has_disconnect : std::false_type { };
+
+    template<class T>
+    struct has_disconnect<T,std::void_t<decltype(&T::disconnect)>>
+      : std::is_base_of<helicscpp::Federate,T>::type { };
+
+    ////
+    // Recommended to change helicsFederateFinalize to
+    // helicsFederateDisconnect, the finalize method is still
+    // in place but will be deprecated in a future release. #1952.
+    ////
+    template<class T>
+    typename std::enable_if<has_disconnect<T>::value>::type
+    disconnect_federate(T& o)
+    {
+      return o.disconnect();
+    }
+
+    template<class T>
+    typename std::enable_if<!has_disconnect<T>::value>::type
+    disconnect_federate(T& o)
+    {
+      return o.finalize();
+    }
+
+  }
+
+  typedef decltype(std::declval<helicscpp::Federate>().getCurrentTime()) HelicsTime;
+
+#if HAVE_HELICSPROPERTIES == 0
+  const auto constexpr HELICS_PROPERTY_TIME_PERIOD = helics_property_time_period;
+#endif // !HAVE_HELICSPROPERTIES
+
+#if HAVE_HELICSFEDERATESTATE == 0
+  const auto constexpr HELICS_STATE_STARTUP = helics_state_startup;
+  const auto constexpr HELICS_STATE_INITIALIZATION = helics_state_initialization;
+  const auto constexpr HELICS_STATE_EXECUTION = helics_state_execution;
+  const auto constexpr HELICS_STATE_FINALIZE = helics_state_finalize;
+  const auto constexpr HELICS_STATE_ERROR = helics_state_error;
+#endif // !HAVE_HELICSFEDERATESTATE
+
+  ////
+  // HELICS 2.x: helicsPublicationGetKey()
+  // HELICS 3: helicsPublicationGetName()
+  ////
+  const char *
+  get_publication_key(const helicscpp::Publication& pub)
+  {
+    return helpers::get_key(pub);
+  }
+
+  ////
+  // HELICS 2.x: helicsInputGetKey()
+  // HELICS 3: helicsInputGetName()
+  ////
+  const char *
+  get_input_key(const helicscpp::Input &input)
+  {
+    return helpers::get_key(input);
+  }
+
+  ////
+  // HELICS 2.x: helicsPendingMessages()
+  // HELICS 3: helicsPendingMessageCount()
+  ////
+  uint64_t
+  pending_message_count(const helicscpp::Endpoint &endpoint)
+  {
+    return helpers::pending_message_count(endpoint);
+  }
+
+  void
+  disconnect_federate(helicscpp::Federate &fed)
+  {
+    helpers::disconnect_federate(fed);
+  }
+
+}
+#endif // HAVE_HELICS
+
 static helicscpp::CombinationFederate *pHelicsFederate;
 EXPORT TIMESTAMP clocks_update(void *ptr, TIMESTAMP t1)
 {
@@ -103,13 +224,13 @@ void send_die(void)
 		//TODO find equivalent helics die message
 #if HAVE_HELICS
 		gl_verbose("helics_msg: Calling error");
-		const helics_federate_state fed_state = pHelicsFederate->getCurrentMode();
-		if(fed_state != helics_state_finalize) {
-			if(fed_state != helics_state_error) {
+		const auto fed_state = pHelicsFederate->getCurrentMode();
+		if(fed_state != HELICS_STATE_FINALIZE) {
+			if(fed_state != HELICS_STATE_ERROR) {
 				string fed_name = string(pHelicsFederate->getName());
 				string error_msg = fed_name + string(":The GridLAB-D Federate encountered an internal Error.");
 				pHelicsFederate->globalError((int)(exitCode.get_int16()), error_msg);
-				pHelicsFederate->finalize();
+				disconnect_federate(*pHelicsFederate);
 			}
 		}
 		helicscpp::cleanupHelicsLibrary();
@@ -118,9 +239,9 @@ void send_die(void)
 		//TODO find equivalent helics clean exit message
 #if HAVE_HELICS
 		gl_verbose("helics_msg: Calling finalize\n");
-		const helics_federate_state fed_state = pHelicsFederate->getCurrentMode();
-		if(fed_state != helics_state_finalize) {
-			pHelicsFederate->finalize();
+		const auto fed_state = pHelicsFederate->getCurrentMode();
+		if(fed_state != HELICS_STATE_FINALIZE) {
+			disconnect_federate(*pHelicsFederate);
 		}
 		helicscpp::cleanupHelicsLibrary();
 #endif
@@ -182,7 +303,7 @@ int helics_msg::init(OBJECT *parent){
 							individual_message_type = config_info["message_type"].asString();
 							if( individual_message_type.compare("JSON") == 0 ) {
 								json_gld_pub = new json_helics_value_publication();
-								json_gld_pub->key = string(pub.getKey());
+								json_gld_pub->key = get_publication_key(pub);
 								json_gld_pub->objectPropertyBundle = config_info["publication_info"];
 								json_publication *gldProperty = NULL;
 								for(Json::ValueIterator it = json_gld_pub->objectPropertyBundle.begin(); it != json_gld_pub->objectPropertyBundle.end(); it++){
@@ -199,17 +320,17 @@ int helics_msg::init(OBJECT *parent){
 								json_helics_value_publications.push_back(json_gld_pub);
 							} else if( individual_message_type.compare("GENERAL") == 0 ){
 								gld_pub = new helics_value_publication();
-								gld_pub->key = string(pub.getKey());
+								gld_pub->key = get_publication_key(pub);
 								gld_pub->objectName = config_info["object"].asString();
 								gld_pub->propertyName = config_info["property"].asString();
 								gld_pub->HelicsPublication = pub;
 								helics_value_publications.push_back(gld_pub);
 							} else {
-								throw("The info field of the publication:%s defines an unknown message_type:%s. Valid message types are JSON and GENERAL", pub.getKey(), individual_message_type.c_str());
+								throw("The info field of the publication:%s defines an unknown message_type:%s. Valid message types are JSON and GENERAL", get_publication_key(pub), individual_message_type.c_str());
 							}
 						} else {
 							gld_pub = new helics_value_publication();
-							gld_pub->key = string(pub.getKey());
+							gld_pub->key = get_publication_key(pub);
 							gld_pub->objectName = config_info["object"].asString();
 							gld_pub->propertyName = config_info["property"].asString();
 							gld_pub->HelicsPublication = pub;
@@ -226,22 +347,22 @@ int helics_msg::init(OBJECT *parent){
 							individual_message_type = config_info["message_type"].asString();
 							if( individual_message_type.compare("JSON") == 0 ) {
 								json_gld_sub = new json_helics_value_subscription();
-								json_gld_sub->key = string(sub.getKey());
+								json_gld_sub->key = get_input_key(sub);
 								json_gld_sub->HelicsSubscription = sub;
 								json_helics_value_subscriptions.push_back(json_gld_sub);
 							} else if( individual_message_type.compare("GENERAL") == 0 ){
 								gld_sub = new helics_value_subscription();
-								gld_sub->key = string(sub.getKey());
+								gld_sub->key = get_input_key(sub);
 								gld_sub->objectName = config_info["object"].asString();
 								gld_sub->propertyName = config_info["property"].asString();
 								gld_sub->HelicsSubscription = sub;
 								helics_value_subscriptions.push_back(gld_sub);
 							} else {
-								throw("The info field of the subscription:%s defines an unknown message_type:%s. Valid message types are JSON and GENERAL", sub.getKey(), individual_message_type.c_str());
+								throw("The info field of the subscription:%s defines an unknown message_type:%s. Valid message types are JSON and GENERAL", get_input_key(sub), individual_message_type.c_str());
 							}
 						} else {
 							gld_sub = new helics_value_subscription();
-							gld_sub->key = string(sub.getKey());
+							gld_sub->key = get_input_key(sub);
 							gld_sub->objectName = config_info["object"].asString();
 							gld_sub->propertyName = config_info["property"].asString();
 							gld_sub->HelicsSubscription = sub;
@@ -342,7 +463,7 @@ int helics_msg::init(OBJECT *parent){
 					helicscpp::Publication pub = gld_helics_federate->getPublication(idx);
 					if(pub.isValid()) {
 						json_gld_pub = new json_helics_value_publication();
-						json_gld_pub->key = string(pub.getKey());
+						json_gld_pub->key = get_publication_key(pub);
 						config_info_temp = string(pub.getInfo());
 						json_reader.parse(config_info_temp, json_gld_pub->objectPropertyBundle);
 						json_publication *gldProperty = NULL;
@@ -364,7 +485,7 @@ int helics_msg::init(OBJECT *parent){
 					helicscpp::Input sub = gld_helics_federate->getSubscription(idx);
 					if(sub.isValid()){
 						json_gld_sub = new json_helics_value_subscription();
-						json_gld_sub->key = string(sub.getKey());
+						json_gld_sub->key = get_input_key(sub);
 						json_gld_sub->HelicsSubscription = sub;
 						json_helics_value_subscriptions.push_back(json_gld_sub);
 					}
@@ -732,19 +853,19 @@ SIMULATIONMODE helics_msg::deltaClockUpdate(double t1, unsigned long timestep, S
 #if HAVE_HELICS
 	if (t1 > last_delta_helics_time){
 //		helics::time helics_time = 0;
-		helics_time helics_t = 0;
+		HelicsTime helics_t = 0;
 //		helics::time t = 0;
-		helics_time t = 0;
+		HelicsTime t = 0;
 		double dt = 0;
 		int t_ns = 0;
 		int helics_t_ns = 0;
 		dt = (t1 - (double)initial_sim_time)*1000000000.0;
 		if(sysmode == SM_EVENT) {
-			t = (helics_time)(((dt + (1000000000.0 / 2.0)) - fmod((dt + (1000000000.0 / 2.0)), 1000000000.0))/1000000000.0);
+			t = (HelicsTime)(((dt + (1000000000.0 / 2.0)) - fmod((dt + (1000000000.0 / 2.0)), 1000000000.0))/1000000000.0);
 		} else {
-			t = (helics_time)(((dt + ((double)(timestep) / 2.0)) - fmod((dt + ((double)(timestep) / 2.0)), (double)timestep))/1000000000.0);
+			t = (HelicsTime)(((dt + ((double)(timestep) / 2.0)) - fmod((dt + ((double)(timestep) / 2.0)), (double)timestep))/1000000000.0);
 		}
-		gld_helics_federate->setProperty(helics_property_time_period, (helics_time)(((double)timestep)/DT_SECOND));
+		gld_helics_federate->setProperty(HELICS_PROPERTY_TIME_PERIOD, (HelicsTime)(((double)timestep)/DT_SECOND));
 		helics_t = gld_helics_federate->requestTime(t);
 		//TODO call helics time update function
 		if(sysmode == SM_EVENT)
@@ -776,7 +897,7 @@ TIMESTAMP helics_msg::clk_update(TIMESTAMP t1)
 #if HAVE_HELICS
 		//TODO update time delta in helics
 		gl_verbose("helics_msg: Calling setTimeDelta");
-		gld_helics_federate->setProperty(helics_property_time_period, 1.0);// 140 is the option for the period property.
+		gld_helics_federate->setProperty(HELICS_PROPERTY_TIME_PERIOD, 1.0);// 140 is the option for the period property.
 #endif
 		exitDeltamode = false;
 	}
@@ -810,12 +931,12 @@ TIMESTAMP helics_msg::clk_update(TIMESTAMP t1)
 			}
 		}
 #if HAVE_HELICS
-		helics_time t((double)((t1 - initial_sim_time)));
+		HelicsTime t((double)((t1 - initial_sim_time)));
 //		helics_time = ((TIMESTAMP)helics::time_request(t))/1000000000 + initial_sim_time;
 		//TODO call appropriate helics time update function
 		gl_verbose("helics_msg: Calling requestime");
 		gl_verbose("helics_msg: Requesting %f", (double)t);
-		helics_time rt;
+		HelicsTime rt;
 		rt = gld_helics_federate->requestTime(t);
 		gl_verbose("helics_msg: Granted %f", (double)rt);
 		helics_t = (TIMESTAMP)rt + initial_sim_time;
@@ -896,7 +1017,7 @@ int helics_msg::publishVariables(){
 		message_buffer_stream.str(string());
 #if HAVE_HELICS
         try {
-			if(gld_helics_federate->getCurrentMode() == helics_state_execution){
+			if(gld_helics_federate->getCurrentMode() == HELICS_STATE_EXECUTION){
 				gl_verbose("calling helics sendMessage");
 				helicscpp::Message *msg = new helicscpp::Message((*pub)->HelicsPublicationEndpoint);
 				msg->data(message_buffer);
@@ -1065,7 +1186,7 @@ int helics_msg::subscribeVariables(){
         gl_verbose("Has message status for endpoint %s: %s", (*sub)->name.c_str(), (*sub)->HelicsSubscriptionEndpoint.hasMessage() ? "True" : "False");
         if((*sub)->HelicsSubscriptionEndpoint.hasMessage()){
 			helicscpp::Message mesg;
-			int pendingMessages = (int) (*sub)->HelicsSubscriptionEndpoint.pendingMessages();
+			int pendingMessages = (int) pending_message_count((*sub)->HelicsSubscriptionEndpoint);
 			for(int i = 0; i < pendingMessages; i++) {
 				gl_verbose("calling getMessage() for endpoint %s", (*sub)->name.c_str());
 				mesg = (*sub)->HelicsSubscriptionEndpoint.getMessage();
@@ -1123,7 +1244,7 @@ int helics_msg::subscribeVariables(){
 	for(vector<json_helics_endpoint_subscription*>::iterator sub = json_helics_endpoint_subscriptions.begin(); sub != json_helics_endpoint_subscriptions.end(); sub++){
 		if((*sub)->HelicsSubscriptionEndpoint.hasMessage()){
 			helicscpp::Message mesg;
-			int pendingMessages = (int) (*sub)->HelicsSubscriptionEndpoint.pendingMessages();
+			int pendingMessages = (int) pending_message_count((*sub)->HelicsSubscriptionEndpoint);
 			for(int i = 0; i < pendingMessages; i++) {
 				gl_verbose("calling getMessage() for endpoint %s", (*sub)->name.c_str());
 				mesg = (*sub)->HelicsSubscriptionEndpoint.getMessage();
@@ -1320,7 +1441,7 @@ int helics_msg::subscribeJsonVariables(){
 	for(vector<json_helics_endpoint_subscription*>::iterator sub = json_helics_endpoint_subscriptions.begin(); sub != json_helics_endpoint_subscriptions.end(); sub++){
 		if((*sub)->HelicsSubscriptionEndpoint.hasMessage()){
 			helicscpp::Message mesg;
-			int pendingMessages = (int) (*sub)->HelicsSubscriptionEndpoint.pendingMessages();
+			int pendingMessages = (int) pending_message_count((*sub)->HelicsSubscriptionEndpoint);
 			for(int i = 0; i < pendingMessages; i++) {
 				gl_verbose("calling getMessage() for endpoint %s", (*sub)->name.c_str());
 				mesg = (*sub)->HelicsSubscriptionEndpoint.getMessage();
